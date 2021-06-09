@@ -16,7 +16,7 @@ def pytest_configure():
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
-    if hasattr(item, '_request'):
+    if hasattr(item, "_request"):
         item._request._fillfixtures = types.MethodType(
             fillfixtures(item._request._fillfixtures), item._request
         )
@@ -29,26 +29,32 @@ def fillfixtures(_fillfixtures):
         if fixturenames is None:
             fixturenames = request.fixturenames
 
-        if hasattr(item, 'callspec'):
+        if hasattr(item, "callspec"):
             for param, val in sorted_by_dependency(item.callspec.params, fixturenames):
                 if val is not None and is_lazy_fixture(val):
-                    item.callspec.params[param] = request.getfixturevalue(val.name)
+                    fixturevalue = request.getfixturevalue(val.name)
+                    if not callable(fixturevalue) and len(val.calls) > 0:
+                        breakpoint()
+                    for args, kwargs in reversed(val.calls):
+                        fixturevalue = fixturevalue(*args, **kwargs)
+                    item.callspec.params[param] = fixturevalue
                 elif param not in item.funcargs:
                     item.funcargs[param] = request.getfixturevalue(param)
 
         _fillfixtures()
+
     return fill
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_fixture_setup(fixturedef, request):
-    val = getattr(request, 'param', None)
+    val = getattr(request, "param", None)
     if is_lazy_fixture(val):
         request.param = request.getfixturevalue(val.name)
 
 
 def pytest_runtest_call(item):
-    if hasattr(item, 'funcargs'):
+    if hasattr(item, "funcargs"):
         for arg, val in item.funcargs.items():
             if is_lazy_fixture(val):
                 item.funcargs[arg] = item._request.getfixturevalue(val.name)
@@ -71,8 +77,8 @@ def pytest_make_parametrize_id(config, val, argname):
 def pytest_generate_tests(metafunc):
     yield
 
-    normalize_metafunc_calls(metafunc, 'funcargs')
-    normalize_metafunc_calls(metafunc, 'params')
+    normalize_metafunc_calls(metafunc, "funcargs")
+    normalize_metafunc_calls(metafunc, "params")
 
 
 def normalize_metafunc_calls(metafunc, valtype, used_keys=None):
@@ -99,7 +105,7 @@ def copy_metafunc(metafunc):
 
 
 def normalize_call(callspec, metafunc, valtype, used_keys):
-    fm = metafunc.config.pluginmanager.get_plugin('funcmanage')
+    fm = metafunc.config.pluginmanager.get_plugin("funcmanage")
 
     used_keys = used_keys or set()
     valtype_keys = set(getattr(callspec, valtype).keys()) - used_keys
@@ -108,16 +114,25 @@ def normalize_call(callspec, metafunc, valtype, used_keys):
         val = getattr(callspec, valtype)[arg]
         if is_lazy_fixture(val):
             try:
-                _, fixturenames_closure, arg2fixturedefs = fm.getfixtureclosure([val.name], metafunc.definition.parent)
+                _, fixturenames_closure, arg2fixturedefs = fm.getfixtureclosure(
+                    [val.name], metafunc.definition.parent
+                )
             except ValueError:
                 # 3.6.0 <= pytest < 3.7.0; `FixtureManager.getfixtureclosure` returns 2 values
-                fixturenames_closure, arg2fixturedefs = fm.getfixtureclosure([val.name], metafunc.definition.parent)
+                fixturenames_closure, arg2fixturedefs = fm.getfixtureclosure(
+                    [val.name], metafunc.definition.parent
+                )
             except AttributeError:
                 # pytest < 3.6.0; `Metafunc` has no `definition` attribute
-                fixturenames_closure, arg2fixturedefs = fm.getfixtureclosure([val.name], current_node)
+                fixturenames_closure, arg2fixturedefs = fm.getfixtureclosure(
+                    [val.name], current_node
+                )
 
-            extra_fixturenames = [fname for fname in fixturenames_closure
-                                  if fname not in callspec.params and fname not in callspec.funcargs]
+            extra_fixturenames = [
+                fname
+                for fname in fixturenames_closure
+                if fname not in callspec.params and fname not in callspec.funcargs
+            ]
 
             newmetafunc = copy_metafunc(metafunc)
             newmetafunc.fixturenames = extra_fixturenames
@@ -145,9 +160,7 @@ def sorted_by_dependency(params, fixturenames):
 
     non_free_fm_list = []
     for free_key in free_fm:
-        non_free_fm_list.extend(
-            _tree_to_list(non_free_fm, free_key)
-        )
+        non_free_fm_list.extend(_tree_to_list(non_free_fm, free_key))
 
     return [(key, params.get(key)) for key in (free_fm + non_free_fm_list)]
 
@@ -169,9 +182,7 @@ def _tree_to_list(trees, leave):
     lst = []
     for l in trees[leave]:
         lst.append(l)
-        lst.extend(
-            _tree_to_list(trees, l)
-        )
+        lst.extend(_tree_to_list(trees, l))
     return lst
 
 
@@ -189,9 +200,14 @@ def is_lazy_fixture(val):
 class LazyFixture(object):
     def __init__(self, name):
         self.name = name
+        self.calls = []
 
     def __repr__(self):
         return '<{} "{}">'.format(self.__class__.__name__, self.name)
 
     def __eq__(self, other):
         return self.name == other.name
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self
